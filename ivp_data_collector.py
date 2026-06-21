@@ -5,6 +5,7 @@ from parsing import extract_rate_df
 from ivp_solver import Solver
 import numpy as np
 
+# Parses reactions networks, solves IVPs and saves the results in a SQLite database
 class IVPDataCollector:
     def __init__(self, db_file):
         self.db_file = db_file
@@ -17,7 +18,6 @@ class IVPDataCollector:
         ''')
 
         species_df = pd.read_sql_query('SELECT * FROM Species', con)
-        print(species_df)
         species_mapping_dict = dict(zip(species_df['short_name'], species_df['species_id']))
 
         reaction_df['reactants_species_id'] = reaction_df['reactants'].apply(lambda x: [species_mapping_dict[shortname] for shortname in x])
@@ -38,7 +38,6 @@ class IVPDataCollector:
                         VALUES({network_id}, {i+1}, "{product}")')
                 
         con.commit()
-        # con.close()
 
     def store_rate_set(self, network_id, rate_set_id, rate_df):
         con = self.con
@@ -56,20 +55,12 @@ class IVPDataCollector:
                         VALUES({rate_set_id}, {i+1}, {rate})')
 
         con.commit()
-        con.close()
-        # print(f'Done storing data from network {network_id}')
     
-    def store_ivp(self, ivp_id, rate_set_id, num_points, time_step, initial_value_df):
+    def store_ivp(self, rate_set_id, num_points, time_step, initial_value_df):
         self.con.execute(
-            f'''INSERT INTO IVPS(ivp_id, rate_set_id, num_points, time_step)
-            VALUES({ivp_id}, {rate_set_id}, {num_points}, {time_step})
+            f'''INSERT INTO IVPS(rate_set_id, num_points, time_step)
+            VALUES({rate_set_id}, {num_points}, {time_step})
         ''')
-
-        # self.con.execute(
-        #     f'''INSERT INTO IVPS(ivp_id, rate_set_id, num_points, time_step)
-        #     VALUES({ivp_id}, {rate_set_id}, {num_points}, {time_step})
-        # ''')
-
 
     def store_species_populations(self, rate_set_id, ivp_id, rate_df, initial_value_df, num_points):
         self.con = sqlite3.connect(self.db_file)
@@ -81,8 +72,10 @@ class IVPDataCollector:
         result_df['time'] = result_df.index
         result_df = result_df.melt(var_name='short_name')
 
-    def run_and_store_ivp_sol(self, rate_set_id, ivp_id, species_df, rate_df, initial_value_df, num_points):
+    def run_and_store_ivp_sol(self, rate_set_id, species_df, rate_df, initial_value_df, num_points):
         time_step = 1
+        ivp_id = pd.read_sql_query('SELECT COUNT(*) as N FROM IVPs', self.con).N[0] + 1
+        ivp_id = int(ivp_id)
         self.con.execute(f'INSERT INTO IVPs(ivp_id, rate_set_id, num_points, time_step)\
                 VALUES({ivp_id}, {rate_set_id}, {num_points}, {time_step})')
         
@@ -90,7 +83,6 @@ class IVPDataCollector:
         sol.solve(num_points = num_points, start_x=0, end_x=num_points, method='Radau')
         result_df = sol.get_solution_df()
         result_df['time'] = result_df.index
-        
         result_df = result_df.melt(var_name='short_name', value_name='population', id_vars = 'time').\
             merge(species_df[['species_id', 'short_name']], on=['short_name', 'short_name'])
         insert_query = """
@@ -101,14 +93,10 @@ class IVPDataCollector:
         
         self.con.executemany(insert_query, res_list)
         self.con.commit()
-        # self.con.close()
-        # self.con.commit()
-
 
     def run_and_store_n_ivp_sols(self, rate_set_id, rate_df, num_points, num_ivps):
         self.con = sqlite3.connect(self.db_file) 
         species_df = pd.read_sql_query('SELECT * FROM Species', self.con)
-        # species_df = pd.read_csv('csvs/legewi_wild_species.csv', header=0)
 
         current_ivp_df = pd.read_sql_query('SELECT COUNT(*) as num FROM IVPs', self.con)
         current_ivp_id = int(current_ivp_df.num[0])
@@ -118,11 +106,6 @@ class IVPDataCollector:
             ivp_id += 1
             ivp_id = int(ivp_id)
             initial_value_df = species_df.copy(deep=True)
-            # initial_value_df['population'] = np.repeat(0, 4) + np.random.randint(0, 1000, initial_value_df.shape[0] - 4)
             initial_value_df['population'] = np.concatenate([np.random.randint(0, 1000, 4), np.repeat(0, initial_value_df.shape[0] - 4)])
             self.run_and_store_ivp_sol(rate_set_id, ivp_id, species_df, rate_df, initial_value_df, num_points)
-        # self.con.commit()
-        # self.con.executemany(insert_query, res_list)
-        # self.con.commit()
-        
-        self.con.close()
+        self.con.commit()
